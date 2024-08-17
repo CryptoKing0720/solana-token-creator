@@ -2,6 +2,7 @@
   "name": "token-creation",
   "version": "1.0.0",
   "description": "",
+  "type": "module",
   "dependencies": {
     "@metaplex-foundation/mpl-token-metadata": "^2.5.2",
     "@solana/spl-token": "^0.4.0",

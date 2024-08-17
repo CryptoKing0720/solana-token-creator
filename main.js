@@ -1,77 +1,130 @@
-const fs = require('fs');
-const {createToken} = require('./src/create_token.js')
-const { NFTStorage, Blob,File} = require ('nft.storage')
+import bs58 from "bs58";
+import {
+  Connection,
+  Keypair,
+  PublicKey,
+  SystemProgram,
+  Transaction,
+  clusterApiUrl,
+  sendAndConfirmTransaction,
+} from "@solana/web3.js";
+import {
+  MINT_SIZE,
+  TOKEN_PROGRAM_ID,
+  createInitializeMintInstruction,
+  getMinimumBalanceForRentExemptMint,
+  getAssociatedTokenAddress,
+  createAssociatedTokenAccountInstruction,
+  createMintToInstruction,
+} from "@solana/spl-token";
+import {
+  createCreateMetadataAccountV3Instruction,
+  PROGRAM_ID,
+} from "@metaplex-foundation/mpl-token-metadata";
 
-const {
-    NFT_STORAGE_TOKEN,
-    revokeMintBool,
-    revokeFreezeBool,
-    tokenInfo,
-    metaDataforToken
-} = require('./config.js')
+const connection = new Connection(clusterApiUrl("devnet"), "confirmed");
 
+const payer = Keypair.fromSecretKey(
+  bs58.decode(
+    "5cxGnWrQKSakRrQ1a2vomnRDAsN9wN2zLWuaz6aZrN8oKgM4qdXHVoHxygMtJ27z1WTZRj7eGnLBSbV4Na24JxbZ"
+  )
+);
 
+console.log("Payer:", payer.publicKey.toBase58());
 
+const createToken = async (decimals, amount) => {
+  console.log("Creating token...");
+  const lamports = await getMinimumBalanceForRentExemptMint(connection);
+  const mintKeypair = Keypair.generate();
+  const tokenATA = await getAssociatedTokenAddress(
+    mintKeypair.publicKey,
+    payer.publicKey
+  );
 
-async function main() {
+  const createNewTokenTransaction = new Transaction().add(
+    SystemProgram.createAccount({
+      fromPubkey: payer.publicKey,
+      newAccountPubkey: mintKeypair.publicKey,
+      space: MINT_SIZE,
+      lamports: lamports,
+      programId: TOKEN_PROGRAM_ID,
+    }),
+    createInitializeMintInstruction(
+      mintKeypair.publicKey,
+      decimals,
+      payer.publicKey,
+      null,
+      TOKEN_PROGRAM_ID
+    ),
+    createAssociatedTokenAccountInstruction(
+      payer.publicKey,
+      tokenATA,
+      payer.publicKey,
+      mintKeypair.publicKey
+    ),
+    createMintToInstruction(
+      mintKeypair.publicKey,
+      tokenATA,
+      payer.publicKey,
+      amount * Math.pow(10, decimals),
+      [payer]
+    )
+  );
+  const signature = await sendAndConfirmTransaction(
+    connection,
+    createNewTokenTransaction,
+    [payer, mintKeypair]
+  );
+  console.log(
+    `Signature: ${signature}  Mint: ${mintKeypair.publicKey.toBase58()}`
+  );
+};
 
-    // uploadMetaData
-    const metadata_url = await uploadMetaData()
-    if (!metadata_url){
-        console.log("Metadata failed")
-        return;
-    }
-    tokenInfo.metadata = metadata_url
+const createMetaData = async (mintAddress, name, symbol) => {
+  console.log("Creating meta-data transactions...");
+  // const metaplex = Metaplex.make(connection).use(keypairIdentity(payer));
+  const mint = new PublicKey(mintAddress);
+  const [metadataPDA] = PublicKey.findProgramAddressSync(
+    [Buffer.from("metadata"), PROGRAM_ID.toBuffer(), mint.toBuffer()],
+    PROGRAM_ID
+  );
+  console.log("METADATA_PDA:", metadataPDA.toBase58());
 
-    // Create token
-    console.log("Creating Token...")
-    const mintAddress = await createToken(tokenInfo, revokeMintBool, revokeFreezeBool)
-    console.log(`Mint Link: https://solscan.io/token/${mintAddress.toString()}`)
+  const tokenMetadata = {
+    name: name,
+    symbol: symbol,
+    uri: "",
+    sellerFeeBasisPoints: 0,
+    creators: null,
+    collection: null,
+    uses: null,
+  };
+  const transaction = new Transaction().add(
+    createCreateMetadataAccountV3Instruction(
+      {
+        metadata: metadataPDA,
+        mint: mint,
+        mintAuthority: payer.publicKey,
+        payer: payer.publicKey,
+        updateAuthority: payer.publicKey,
+      },
+      {
+        createMetadataAccountArgsV3: {
+          data: tokenMetadata,
+          isMutable: true,
+          collectionDetails: null,
+        },
+      }
+    )
+  );
 
+  const signature = await connection.sendTransaction(transaction, [payer]);
+  await connection.confirmTransaction({ signature });
+};
 
-}
-
-
-
-
-async function uploadMetaData() {
-    const endpoint = 'https://api.nft.storage' 
-    const storage = new NFTStorage({ endpoint, token: NFT_STORAGE_TOKEN })
-
-    // Store image
-    const data = await fs.promises.readFile('./image.png')
-    const cid1 = await storage.storeBlob(new Blob([data]))
-    const imageUrl = `https://${cid1}.ipfs.nftstorage.link`
-    const status1 = await storage.status(cid1)
-    if (status1.pin.status != 'pinned'){
-        console.log("Could not upload image, Status: ",status1.pin.status)
-        return;
-    }
-    console.log('Image Upload status: ',status1.pin.status)
-    
-    console.log("Image url: ",imageUrl)
-    metaDataforToken.image = imageUrl
-
-
-    // store as a json file
-    const jsonString = JSON.stringify(metaDataforToken, null, 2);
-    const file = new File([jsonString], "metadata.json", {type: "application/json"});
-
-    const cid = await storage.storeBlob(file)
-    const status = await storage.status(cid)
-
-    if (status1.pin.status != 'pinned'){
-        console.log("Could not upload Metadata, Status: ",status1.pin.status)
-        return;
-    }
-
-    console.log('MetaData Upload status: ',status.pin.status)
-    const metadata_url = `https://${cid}.ipfs.nftstorage.link`
-    console.log('Metadata URI: ', metadata_url)
-
-    
-    return metadata_url
-
-  }
-
-main()
+// createToken(8, 1000000000);
+createMetaData(
+  "HuzBTgbFt2mStaWYKDNwqcuooVnrResAuLx48nfhrft9",
+  "Kamala Harris",
+  "KAHA"
+);
